@@ -201,3 +201,225 @@ retail_ts |>
 ```
 
 The non-seasonally adjusted retail sales series is noticeably noisier, with much larger month-to-month fluctuations compared to the seasonally adjusted series. This occurs because the NSA series still contains predictable seasonal patterns, such as increased holiday shopping and declines following the holiday season. The SA series removes much of this recurring variation, resulting in a smoother growth rate that better reflects underlying changes in retail activity.
+
+## 3. Seasonality
+
+This section examines seasonal patterns in U.S. retail sales and Canadian natural gas production. Seasonal plots and decomposition methods are used to identify recurring fluctuations, while a linear trend and seasonal dummy model is used to evaluate how well these patterns can be explained.
+
+### Seasonal Patterns
+```{r}
+retail_ts |>
+  filter(series_id == "RSAFSNA") |>
+  gg_season(sales) +
+  labs(
+    title = "Seasonal Pattern in NSA Retail Sales",
+    y = "Millions of dollars"
+  ) +
+  theme_minimal()
+
+retail_ts |>
+  filter(series_id == "RSAFS") |>
+  gg_season(sales) +
+  labs(
+    title = "Seasonal Pattern in SA Retail Sales",
+    y = "Millions of dollars"
+  ) +
+  theme_minimal()
+
+can_gas |>
+  gg_season(log_volume) +
+  labs(
+    title = "Seasonal Pattern in Canadian Natural Gas Production",
+    y = "Log Volume"
+  ) +
+  theme_minimal()
+
+can_gas |>
+  gg_subseries(log_volume) +
+  labs(
+    title = "Subseries Plot: Canadian Gas Production",
+    y = "log(Volume)"
+  ) +
+  theme_minimal()
+```
+
+The non-seasonally adjusted retail sales series shows a clear recurring seasonal pattern, with sales generally increasing toward the end of each year, particularly during the holiday shopping season. The seasonally adjusted series has much less predictable monthly variation, indicating that seasonal adjustment successfully removes much of the recurring pattern.
+
+Canadian natural gas production also exhibits seasonality, with production generally higher during the winter months and lower during the summer. These recurring fluctuations suggest that seasonal factors play an important role in explaining changes in natural gas production.
+
+### X-13 Seasonal Adjustment
+```{r}
+retail_nsa_x13 <- retail_ts |>
+  filter(series_id == "RSAFSNA") |>
+  model(x13 = X_13ARIMA_SEATS(sales)) |>
+  components()
+
+retail_nsa_x13 |>
+  autoplot()
+```
+```{r}
+sa_compare <- retail_nsa_x13 |>
+  as_tibble() |>
+  select(Month, mine = season_adjust) |>
+  left_join(
+    retail_ts |>
+      filter(series_id == "RSAFS") |>
+      as_tibble() |>
+      transmute(Month, census = sales),
+    by = "Month"
+  ) |>
+  mutate(pct_diff = 100 * (log(mine) - log(census)))
+
+sa_compare |>
+  ggplot(aes(x = Month, y = pct_diff)) +
+  geom_line() +
+  labs(
+    title = "My X-13 Seasonal Adjustment Minus the Census Bureau's",
+    x = NULL,
+    y = "Difference (%)"
+  ) +
+  theme_minimal()
+```
+
+My X-13 seasonally adjusted series closely matches the official Census Bureau series, with differences generally remaining near zero percent. The largest differences occur around 2020–2022, when the series experiences unusually large fluctuations. These differences likely reflect variations in the adjustment settings and the treatment of unusual economic shocks.
+
+### Linear Trend and Seasonal Dummy Model
+```{r}
+can_gas_fit <- can_gas |>
+  model(TSLM(log_volume ~ trend() + season()))
+
+can_gas_fit |>
+  tidy() |>
+  select(term, estimate, std.error, statistic, p.value) |>
+  knitr::kable(digits = 3)
+```
+
+The estimated average monthly growth rate of Canadian natural gas production is approximately 0.397%, based on the trend coefficient of 0.003973. June has the strongest statistically significant seasonal effect, with the largest absolute t-statistic of approximately 4.777. Its negative coefficient indicates that natural gas production tends to be lower in June compared to January, after accounting for the trend.
+
+```{r}
+can_gas_fit |>
+  augment() |>
+  ggplot(aes(x = Month)) +
+  geom_line(aes(y = log_volume, color = "Actual")) +
+  geom_line(aes(y = .fitted, color = "Fitted")) +
+  labs(
+    title = "Linear Trend + Seasonal Dummies Fit: Canadian Gas Production",
+    x = "Year",
+    y = "log(Volume)",
+    color = NULL
+  ) +
+  theme_minimal()
+```
+
+The fitted model captures the overall upward trend and recurring seasonal fluctuations in Canadian natural gas production reasonably well. However, it does not fully capture changes in the growth rate over time. The largest differences occur during the early 1960s and around the 1970s, when actual production deviates noticeably from the fitted linear trend.
+
+### Residual Diagnostics and Ljung-Box Test
+```{r}
+can_gas_fit |>
+  gg_tsresiduals()
+
+can_gas_fit |>
+  augment() |>
+  features(.innov, ljung_box, lag = 24) |>
+  knitr::kable(digits = 3)
+```
+
+The residuals do not resemble white noise because they exhibit a clear curved pattern over time and strong positive autocorrelation across multiple lags. The Ljung–Box test produces a test statistic of approximately 7,774 and a p-value below 0.001, so the null hypothesis of no autocorrelation is rejected at the 5% significance level. This suggests that the linear trend and seasonal dummy model leaves substantial predictable structure in the residuals that could be captured by a more flexible model.
+
+## 4. Forecast Evaluation
+
+This section evaluates the forecasting accuracy of two models for Canadian natural gas production: a seasonal naive model and a linear trend with seasonal dummy variables. Expanding-window and rolling-window cross-validation are used to compare their performance using MAE and RMSE. A Diebold-Mariano test is also used to determine whether the difference in forecast accuracy is statistically significant.
+
+### Expanding-Window Cross-Validation
+```{r}
+gas_cv_fc <- can_gas |>
+  select(Month, Volume) |>
+  stretch_tsibble(.init = 240, .step = 1) |>
+  model(
+    snaive = SNAIVE(Volume),
+    tslm = TSLM(log(Volume) ~ trend() + season())
+  ) |>
+  forecast(h = 1)
+
+gas_cv_fc |>
+  accuracy(
+    can_gas,
+    measures = list(MAE = MAE, RMSE = RMSE)
+  ) |>
+  knitr::kable(digits = 3)
+```
+
+The expanding-window cross-validation evaluates one-month-ahead forecasts from January 1980 through February 2005. The seasonal naive model performs substantially better, with an MAE of 0.562 and RMSE of 0.702, compared to the linear trend and seasonal dummy model's MAE of 4.010 and RMSE of 4.360. Both accuracy measures agree that the seasonal naive model produces more accurate forecasts.
+
+### Diebold-Mariano Test
+```{r}
+errs <- gas_cv_fc |>
+  as_tibble() |>
+  left_join(
+    as_tibble(can_gas) |>
+      select(Month, actual = Volume),
+    by = "Month"
+  ) |>
+  mutate(e = actual - .mean) |>
+  select(Month, .model, e) |>
+  pivot_wider(names_from = .model, values_from = e) |>
+  na.omit()
+
+dm_result <- forecast::dm.test(
+  errs$snaive,
+  errs$tslm,
+  h = 1,
+  power = 1
+)
+
+dm_result
+```
+
+The Diebold-Mariano test evaluates whether the two forecasting models have equal predictive accuracy. The test produces a statistic of -31.278 and a p-value below 0.001, so the null hypothesis of equal forecast accuracy is rejected at the 5% significance level. Combined with the lower MAE and RMSE values, this provides strong evidence that the seasonal naive model forecasts Canadian natural gas production more accurately than the linear trend and seasonal dummy model.
+
+### Rolling-Window Cross-Validation
+```{r}
+gas_roll_fc <- can_gas |>
+  select(Month, Volume) |>
+  slide_tsibble(.size = 240, .step = 1) |>
+  model(
+    snaive = SNAIVE(Volume),
+    tslm = TSLM(log(Volume) ~ trend() + season())
+  ) |>
+  forecast(h = 1)
+
+gas_roll_fc |>
+  accuracy(
+    can_gas,
+    measures = list(MAE = MAE, RMSE = RMSE)
+  ) |>
+  knitr::kable(digits = 3)
+```
+
+Switching from an expanding window to a rolling window substantially improves the accuracy of the linear trend and seasonal dummy model. Its MAE decreases from 4.010 to 2.090, while its RMSE decreases from 4.360 to 2.420. This improvement occurs because the rolling window uses only the most recent 240 months of data, allowing the model to better adapt to changes in the underlying trend. The seasonal naive model's accuracy remains unchanged, and it continues to outperform the linear trend and seasonal dummy model under both evaluation methods.
+
+```{r}
+expanding_accuracy <- gas_cv_fc |>
+  accuracy(
+    can_gas,
+    measures = list(MAE = MAE, RMSE = RMSE)
+  ) |>
+  mutate(Window = "Expanding")
+
+rolling_accuracy <- gas_roll_fc |>
+  accuracy(
+    can_gas,
+    measures = list(MAE = MAE, RMSE = RMSE)
+  ) |>
+  mutate(Window = "Rolling")
+
+bind_rows(expanding_accuracy, rolling_accuracy) |>
+  select(Window, .model, MAE, RMSE) |>
+  knitr::kable(
+    digits = 3,
+    caption = "Comparison of Forecast Accuracy Across Window Types"
+  )
+```
+
+## 5. Reflection
+The residual diagnostics showed that the linear trend and seasonal dummy model failed to capture important patterns in Canadian natural gas production. The residuals displayed a clear curved pattern and strong autocorrelation, suggesting that the model did not fully account for changes in the trend over time. This helps explain why the seasonal naive model produced more accurate forecasts, with substantially lower MAE and RMSE values. Switching to a rolling window improved the linear trend model's accuracy because it allowed the model to better reflect more recent changes in production. A more flexible model that accounts for changing trends and autocorrelation, such as an ARIMA model, could potentially improve forecasting accuracy by capturing patterns that the simple linear trend model missed.
