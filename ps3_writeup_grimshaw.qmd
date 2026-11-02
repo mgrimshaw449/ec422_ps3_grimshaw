@@ -1,0 +1,97 @@
+---
+title: "Problem Set 3"
+author: "Meredith Grimshaw"
+date: 11/1/2026
+format: 
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+**GitHub repo:** <https://github.com/mgrimshaw449/ec422_ps3_grimshaw.git>
+
+## 1. Time and Tsibbles
+
+This analysis uses two monthly time-series datasets: U.S. retail and food services sales and Canadian natural gas production. The retail dataset contains seasonally adjusted (RSAFS) and non-seasonally adjusted (RSAFSNA) sales data beginning in 1992. The Canadian natural gas dataset contains monthly production volumes from January 1960 through February 2005.
+
+The retail data is organized as a tsibble with Month as the index and series_id as the key, allowing both retail series to be analyzed separately. The Canadian natural gas data uses Month as its index and does not require a key because it contains only one series.
+
+```{r}
+library(tidyverse)
+library(fpp3)
+
+retail_raw <- read_csv(
+  "data/retail_sales_raw.csv",
+  na = ".",
+  col_types = cols(
+    observation_date = col_date(format = "%Y-%m-%d"),
+    RSAFS = col_double(),
+    RSAFSNA = col_double()
+  )
+)
+
+retail_raw_long <- retail_raw |>
+  select(observation_date, RSAFS, RSAFSNA) |>
+  pivot_longer(
+    cols = c(RSAFS, RSAFSNA),
+    names_to = "series_id",
+    values_to = "sales"
+  )
+
+retail_ts <- retail_raw_long |>
+  mutate(Month = yearmonth(observation_date)) |>
+  as_tsibble(index = Month, key = series_id)
+
+can_gas <- canadian_gas |>
+  select(Month, Volume)
+```
+
+```{r}
+retail_ts |>
+  head() |>
+  as_tibble() |>
+  knitr::kable(
+    caption = "First Six Observations of U.S. Retail Sales"
+  )
+
+# Canadian natural gas data
+can_gas |>
+  head() |>
+  as_tibble() |>
+  knitr::kable(
+    caption = "First Six Observations of Canadian Natural Gas Production"
+  )
+```
+
+
+```{r}
+retail_ts |>
+  autoplot(sales) +
+  labs(
+    title = "U.S. Retail and Food Services Sales",
+    subtitle = "Seasonally adjusted vs. not seasonally adjusted",
+    x = NULL,
+    y = "Millions of dollars",
+    color = NULL
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+can_gas |>
+  autoplot(Volume) +
+  geom_smooth(se = FALSE) +
+  labs(
+    title = "Canadian Natural Gas Production with Trend",
+    x = "Year",
+    y = "Billions of cubic metres"
+  ) +
+  theme_minimal()
+```
+
+The non-seasonally adjusted retail sales series shows noticeable repeating spikes and drops throughout each year, while the seasonally adjusted series is much smoother. Both series follow a similar long-run upward trend and experience larger economic fluctuations around the same periods.
+
+Canadian natural gas production also shows a long-run upward trend with repeating seasonal fluctuations. Adding a smoothed trend line makes it easier to identify the overall increase in production despite the monthly variation.
